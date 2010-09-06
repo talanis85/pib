@@ -1,0 +1,258 @@
+#!/usr/bin/python
+
+from Tkinter import *
+from PIL import Image, ImageTk
+import os, sys
+import threading
+
+IMAGE_TYPES = ['jpg','jpeg','gif','bmp','png']
+
+def listImages(path):
+    items = os.listdir(path)
+    items.sort(key=str.lower)
+    filtered_items = []
+
+    for i in items:
+        if os.path.splitext(i.lower())[1][1:] in IMAGE_TYPES:
+            filtered_items.append(os.path.join(path, i))
+
+    return filtered_items
+
+class Main:
+    def __init__(self):
+        self.searchstring = ""
+        self.searchalarm = 0
+        self.root = Tk()
+        self.preloader = Preloader()
+        self.viewer = Viewer(self.root)
+        self.browser = Browser(self.root, os.getcwd(), self.chdir, self.select, selectmode=SINGLE, width=20)
+        self.init_keys()
+        self.resize()
+        self.root.mainloop()
+
+    def init_keys(self):
+        self.root.bind("<Control-q>", lambda e: self.quit())
+        self.root.bind("<Left>", lambda e: self.browser.back())
+        self.root.bind("<Right>", lambda e: self.browser.into())
+        self.root.bind("<Up>", lambda e: self.browser.up())
+        self.root.bind("<Down>", lambda e: self.browser.down())
+        self.root.bind("<Prior>", lambda e: self.browser.pgup())
+        self.root.bind("<Next>", lambda e: self.browser.pgdown())
+        self.root.bind("<Configure>", lambda e: self.resize())
+        self.root.bind("<Escape>", lambda e: self.resetsearch())
+        self.root.bind("<Key>", lambda e: self.search(e.char))
+    
+    def resize(self):
+        self.browser.pack(side=LEFT, fill=Y)
+        self.viewer.pack(side=LEFT, anchor=W, fill=BOTH, expand=1)
+
+    def chdir(self, path):
+        self.preloader.loadDir(path)
+
+    def select(self, filename):
+        self.viewer.setImage(self.preloader.get(filename))
+
+    def resetsearch(self):
+        self.searchstring = ""
+        if not self.searchalarm == 0:
+            self.root.after_cancel(self.searchalarm)
+        self.searchalarm = 0
+
+    def search(self, key):
+        if not self.searchalarm == 0:
+            self.root.after_cancel(self.searchalarm)
+        self.searchalarm = self.root.after(2000, self.resetsearch)
+
+        if str(key).isalnum():
+            self.searchstring += key
+            self.browser.search(self.searchstring)
+
+    def quit(self):
+        sys.exit(0)
+
+class Preloader:
+    def __init__(self):
+        self.images = {}
+        self.images_lock = threading.Lock()
+        self.images_to_load = []
+        self.images_to_load_lock = threading.Lock()
+        self.should_load_condition = threading.Condition()
+        self.did_load_condition = threading.Condition()
+        self.loader = threading.Thread(target=self.loaderMethod)
+        self.loader.daemon = True
+        self.loader.start()
+
+    def get(self, path):
+        if not self.images.has_key(path):
+            self.load(path)
+            self.did_load_condition.acquire()
+            while not self.images.has_key(path):
+                self.did_load_condition.wait()
+            self.did_load_condition.release()
+
+        self.images_lock.acquire()
+        try:
+            if self.images.has_key(path):
+                ret = self.images[path].copy()
+            else:
+                ret = None
+        except:
+            ret = None
+        self.images_lock.release()
+
+        return ret
+
+    def load(self, path):
+        self.should_load_condition.acquire()
+        self.images_to_load.append(path)
+        self.should_load_condition.notify()
+        self.should_load_condition.release()
+
+    def loadAll(self, paths, priority=False):
+        self.should_load_condition.acquire()
+        if priority:
+            self.images_to_load = paths + self.images_to_load
+        else:
+            self.images_to_load.extend(paths)
+        self.should_load_condition.notify()
+        self.should_load_condition.release()
+
+    def loadDir(self, path):
+        self.loadAll(listImages(path), True)
+
+    def loaderMethod(self):
+        while True:
+            self.should_load_condition.acquire()
+            while len(self.images_to_load) == 0:
+                self.should_load_condition.wait(1)
+
+            p = self.images_to_load.pop(0)
+            
+            self.should_load_condition.release()
+        
+            self.did_load_condition.acquire()
+
+            self.images_lock.acquire()
+            try:
+                self.images[p] = Image.open(p)
+            except:
+                self.images[p] = None
+            self.images_lock.release()
+
+            self.did_load_condition.notifyAll()
+            self.did_load_condition.release()
+
+class Browser(Listbox):
+    def __init__(self, root, curdir, on_chdir, on_select, **kwargs):
+        Listbox.__init__(self, root, **kwargs)
+        self.on_chdir, self.on_select = on_chdir, on_select
+        self.scrollbar = Scrollbar(root)
+        self.scrollbar.pack(side=LEFT, fill=Y)
+        self.current_path = curdir
+        self.update()
+        self.on_chdir(self.current_path)
+        self.set_active(0)
+
+    def update(self):
+        self.delete(0, END)
+        
+        contents = os.listdir(self.current_path)
+        contents.sort(key=str.lower)
+        for d in contents:
+            abspath = os.path.join(self.current_path, d)
+            if os.path.isdir(abspath):
+                self.insert(END, d)
+
+        for f in listImages(self.current_path):
+            self.insert(END, os.path.split(f)[1])
+
+        self.xview(MOVETO, 0)
+
+        self['yscrollcommand'] = self.scrollbar.set
+        self.scrollbar['command'] = self.yview
+
+    def back(self):
+        oldpath_split = os.path.split(self.current_path)
+        self.current_path = oldpath_split[0] 
+        self.update()
+
+        for i in range(self.size()):
+            if self.get(i) == oldpath_split[1]:
+                sel = i
+                break
+
+        self.on_chdir(self.current_path)
+        self.set_active(sel)
+
+    def into(self):
+        newpath = os.path.join(self.current_path, self.get(ACTIVE))
+        if not os.path.isdir(newpath):
+            return
+        self.current_path = newpath
+        self.update()
+        self.on_chdir(self.current_path)
+        self.set_active(0)
+
+    def up(self):
+        newsel = self.index(ACTIVE) - 1
+        self.set_active(newsel)
+
+    def down(self):
+        newsel = self.index(ACTIVE) + 1
+        self.set_active(newsel)
+
+    def pgup(self):
+        newsel = self.index(ACTIVE) - 15
+        self.set_active(newsel)
+
+    def pgdown(self):
+        newsel = self.index(ACTIVE) + 15
+        self.set_active(newsel)
+
+    def search(self, string):
+        for i in range(self.size()):
+            if self.get(i).lower().startswith(string):
+                self.set_active(i)
+                return
+
+    def set_active(self, index):
+        if index < 0:
+            index = 0
+        if index >= self.size():
+            index = self.size() - 1
+        self.select_clear(0, END)
+        self.activate(index)
+        self.select_set(index)
+        self.see(index)
+        if not os.path.isdir(os.path.join(self.current_path, self.get(index))):
+            self.on_select(os.path.join(self.current_path, self.get(index)))
+       
+class Viewer(Canvas):
+    def __init__(self, root, **kwargs):
+        Canvas.__init__(self, root, **kwargs)
+        self.current_item = 0
+
+    def setImage(self, image):
+        if image == None:
+            return
+
+        self.delete(self.current_item)
+
+        winw, winh = self.winfo_width(), self.winfo_height()
+        (w, h) = image.size
+        neww, newh = w, h
+        ratio = float(w) / h
+        if neww > winw:
+            neww = winw
+            newh = neww / ratio
+        if newh > winh:
+            newh = winh
+            neww = newh * ratio
+
+        image = image.resize((neww, newh))
+
+        self.img = ImageTk.PhotoImage(image)
+        self.current_item = self.create_image(winw/2, winh/2, image=self.img, anchor=CENTER)
+
+m = Main()
+
