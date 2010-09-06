@@ -1,0 +1,17 @@
+pib - Python Image Browser
+--------------------------
+                                (c) 2010 Philip Kranz
+                                http://github.com/talanis85/pib
+
+A keyboard-oriented image viewer/browser written in Python/Tk.
+
+
+Features:
+    - Completely keyboard-based navigation
+    - Asynchronous preloading of images
+
+Todo:
+    - Preview of directories
+    - Pretty interface (probably impossible with Tk)
+    - Better performance
+
